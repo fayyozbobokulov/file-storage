@@ -6,12 +6,12 @@ import { logger } from '@/utils/logger';
  * Multer configuration for file uploads
  * Handles file filtering, size limits, and storage configuration
  */
-export const createUploadMiddleware = () => {
+export const createUploadMiddleware = (maxFiles: number = 1) => {
   return multer({
     storage: multer.memoryStorage(),
     limits: {
       fileSize: config.upload.maxFileSize,
-      files: 1
+      files: maxFiles
     },
     fileFilter: (_req, file, cb) => {
       logger.debug('Processing file filter', {
@@ -58,13 +58,13 @@ export const createUploadMiddleware = () => {
 /**
  * Single file upload middleware
  */
-export const uploadSingle = createUploadMiddleware().single('file');
+export const uploadSingle = createUploadMiddleware(1).single('file');
 
 /**
- * Multiple files upload middleware (for future use)
+ * Multiple files upload middleware
  */
 export const uploadMultiple = (maxCount: number = 10) => 
-  createUploadMiddleware().array('files', maxCount);
+  createUploadMiddleware(maxCount).array('files', maxCount);
 
 /**
  * Extract and validate file metadata from request body
