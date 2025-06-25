@@ -3,6 +3,7 @@ import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { StorageProvider, StorageResult, DownloadResult, StorageError } from '@/types';
 import { logger } from '@/utils/logger';
 import { config } from '@/utils/config';
+import { Readable } from 'stream';
 
 export class S3StorageProvider implements StorageProvider {
   private s3: S3Client;
@@ -141,6 +142,42 @@ export class S3StorageProvider implements StorageProvider {
       };
     } catch (error) {
       logger.error('Failed to download file from S3', {
+        error: error instanceof Error ? error.message : error,
+        storageKey
+      });
+
+      if (error instanceof Error && error.message.includes('NoSuchKey')) {
+        throw new StorageError('File not found');
+      }
+
+      throw new StorageError(`Failed to download file from S3: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
+  async downloadStream(storageKey: string): Promise<Readable> {
+    try {
+      const bucket = this.getBucket(storageKey);
+
+      const downloadParams = {
+        Bucket: bucket,
+        Key: storageKey
+      };
+
+      const command = new GetObjectCommand(downloadParams);
+      const result = await this.s3.send(command);
+
+      if (!result.Body) {
+        throw new StorageError('File body is empty');
+      }
+
+      logger.debug('File downloaded from S3 as stream', {
+        storageKey,
+        bucket
+      });
+
+      return result.Body as any;
+    } catch (error) {
+      logger.error('Failed to download file from S3 as stream', {
         error: error instanceof Error ? error.message : error,
         storageKey
       });

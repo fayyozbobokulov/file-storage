@@ -257,6 +257,67 @@ export class FileController {
         return;
       }
 
+      // First get file metadata to check size
+      const fileMetadata = await this.fileService.getFileMetadata(id, req.user?.userId);
+      const fileSizeThreshold = 1024 * 1024; // 1MB
+
+      // Use streaming for files larger than 1MB
+      if (fileMetadata.size > fileSizeThreshold) {
+        logger.info('Using streaming download for large file', {
+          fileId: id,
+          fileSize: fileMetadata.size,
+          threshold: fileSizeThreshold,
+          userId: req.user?.userId
+        });
+
+        const streamResult = await this.fileService.downloadFileStream(id, req.user?.userId);
+
+        // Set appropriate headers
+        res.setHeader('Content-Type', streamResult.mimetype);
+        res.setHeader('Content-Length', streamResult.size);
+        
+        // Properly encode filename for Content-Disposition header
+        const encodedFilename = encodeURIComponent(streamResult.filename);
+        res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodedFilename}`);
+
+        logger.info('File streamed via API', {
+          fileId: id,
+          filename: streamResult.filename,
+          size: streamResult.size,
+          userId: req.user?.userId,
+          ip: req.ip
+        });
+
+        // Pipe the stream to the response
+        streamResult.stream.pipe(res);
+        
+        // Handle stream errors
+        streamResult.stream.on('error', (error) => {
+          logger.error('Stream error during file download', {
+            error: error.message,
+            fileId: id,
+            userId: req.user?.userId,
+            ip: req.ip
+          });
+          if (!res.headersSent) {
+            res.status(500).json({
+              error: 'Download failed',
+              message: 'An error occurred while streaming the file'
+            });
+          }
+        });
+
+        return;
+      }
+
+      // Use buffer download for smaller files
+      logger.info('Using buffer download for small file', {
+        fileId: id,
+        fileSize: fileMetadata.size,
+        threshold: fileSizeThreshold,
+        userId: req.user?.userId
+      });
+
       const result = await this.fileService.downloadFile(id, req.user?.userId);
 
       // Set appropriate headers
@@ -270,6 +331,7 @@ export class FileController {
       logger.info('File downloaded via API', {
         fileId: id,
         filename: result.filename,
+        size: result.size,
         userId: req.user?.userId,
         ip: req.ip
       });
@@ -595,7 +657,25 @@ export class FileController {
         return;
       }
 
+      // First get file metadata to check size (we'll need to modify serveSecureFile to return metadata)
       const result = await this.fileService.serveSecureFile(id, token);
+      const fileSizeThreshold = 1024 * 1024; // 1MB
+
+      // Check if we should stream based on size
+      if (result.size > fileSizeThreshold) {
+        logger.info('Using streaming for large secure file', {
+          fileId: id,
+          fileSize: result.size,
+          threshold: fileSizeThreshold
+        });
+
+        // For streaming, we would need to implement a streaming version of serveSecureFile
+        // For now, we'll use the buffer approach but log that streaming would be beneficial
+        logger.warn('Large file served as buffer - consider implementing streaming for secure files', {
+          fileId: id,
+          fileSize: result.size
+        });
+      }
 
       // Set appropriate headers
       res.setHeader('Content-Type', result.mimetype);

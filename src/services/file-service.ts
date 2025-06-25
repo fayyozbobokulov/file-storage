@@ -6,6 +6,7 @@ import { logger } from '@/utils/logger';
 import { config } from '@/utils/config';
 import jwt from 'jsonwebtoken';
 import { v4 as uuidv4 } from 'uuid';
+import { Readable } from 'stream';
 
 export interface UploadFileRequest {
   buffer: Buffer;
@@ -165,6 +166,54 @@ export class FileService {
       };
     } catch (error) {
       logger.error('Failed to download file', {
+        error: error instanceof Error ? error.message : error,
+        fileId,
+        userId
+      });
+      throw error;
+    }
+  }
+
+  async downloadFileStream(fileId: string, userId?: string): Promise<{
+    stream: Readable;
+    mimetype: string;
+    size: number;
+    filename: string;
+  }> {
+    try {
+      const file = await this.fileRepository.findById(fileId);
+      
+      if (!file) {
+        throw new FileNotFoundError();
+      }
+
+      // Check permissions
+      if (userId && !await this.checkFileAccess(file, userId, 0x01)) { // READ permission
+        throw new Error('Access denied');
+      }
+
+      // Check if storage provider supports streaming
+      if (!('downloadStream' in this.storageProvider)) {
+        throw new Error('Storage provider does not support streaming');
+      }
+
+      const stream = await (this.storageProvider as any).downloadStream(file.storageKey);
+
+      logger.info('File downloaded as stream', {
+        fileId,
+        originalName: file.originalName,
+        size: file.size,
+        userId
+      });
+
+      return {
+        stream,
+        mimetype: file.mimetype,
+        size: file.size,
+        filename: file.originalName
+      };
+    } catch (error) {
+      logger.error('Failed to download file as stream', {
         error: error instanceof Error ? error.message : error,
         fileId,
         userId
