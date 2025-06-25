@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { requireAuth, optionalAuth } from '@/middleware/auth';
-import { uploadSingle } from '@/middleware/upload';
+import { uploadMultiple, uploadSingle } from '@/middleware/upload';
 import fileController from '@/controllers/file-controller';
 
 const router = Router();
@@ -19,8 +19,11 @@ const router = Router();
  * - Storage statistics (admin only)
  */
 
-// Upload file
+// Upload single file
 router.post('/upload', requireAuth, uploadSingle, fileController.uploadFile.bind(fileController));
+
+// Upload multiple files
+router.post('/upload-multiple', requireAuth, uploadMultiple(10), fileController.uploadFiles.bind(fileController));
 
 // List files
 router.get('/', optionalAuth, fileController.listFiles.bind(fileController));

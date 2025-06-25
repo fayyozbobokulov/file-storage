@@ -179,6 +179,186 @@ export class FileController {
   }
 
   /**
+   * Handle multiple files upload
+   */
+  async uploadFiles(req: Request, res: Response): Promise<void> {
+    logger.info('Multiple file upload request received', {
+      userId: req.user?.userId,
+      ip: req.ip,
+      contentType: req.headers['content-type'],
+      filesReceived: req.files ? Array.isArray(req.files) ? req.files.length : 0 : 0
+    });
+
+    try {
+      // Check if files exist in request
+      if (!req.files || !Array.isArray(req.files) || req.files.length === 0) {
+        logger.warn('No files provided in upload request', {
+          userId: req.user?.userId,
+          ip: req.ip
+        });
+        res.status(400).json({
+          error: 'No files provided',
+          message: 'Please select at least one file to upload'
+        });
+        return;
+      }
+
+      // Check authentication
+      if (!req.user) {
+        logger.warn('Unauthenticated upload attempt', {
+          ip: req.ip,
+          filesCount: req.files.length
+        });
+        res.status(401).json({
+          error: 'Authentication required',
+          message: 'User authentication is required'
+        });
+        return;
+      }
+
+      logger.info('Processing metadata from request body', {
+        hasIsPublic: !!req.body.isPublic,
+        hasPermissions: !!req.body.permissions,
+        hasTags: !!req.body.tags,
+        userId: req.user.userId
+      });
+
+      // Extract and validate metadata
+      let metadata;
+      try {
+        metadata = extractFileMetadata(req.body);
+      } catch (parseError) {
+        logger.error('Failed to parse JSON metadata', {
+          error: parseError instanceof Error ? parseError.message : parseError,
+          userId: req.user.userId,
+          ip: req.ip
+        });
+        res.status(400).json({
+          error: 'Invalid JSON in request body',
+          message: 'Please check the format of isPublic, permissions, and tags fields'
+        });
+        return;
+      }
+
+      // Process each file in parallel
+      const uploadPromises = req.files.map(async (file) => {
+        // Validate file size
+        if (file.size > config.upload.maxFileSize) {
+          logger.warn('File size exceeds limit', {
+            fileSize: file.size,
+            maxAllowedSize: config.upload.maxFileSize,
+            filename: file.originalname,
+            userId: req.user?.userId
+          });
+          return {
+            success: false,
+            filename: file.originalname,
+            error: `File size exceeds the maximum allowed size of ${config.upload.maxFileSize} bytes`
+          };
+        }
+
+        try {
+          const uploadRequest = {
+            buffer: file.buffer,
+            originalName: file.originalname,
+            mimetype: file.mimetype,
+            size: file.size,
+            ownerId: req.user!.userId,
+            isPublic: metadata.isPublic,
+            permissions: metadata.permissions,
+            tags: metadata.tags
+          };
+
+          logger.info('Preparing to upload file to storage', {
+            filename: file.originalname,
+            mimetype: file.mimetype,
+            size: file.size,
+            userId: req.user?.userId,
+            storageProvider: config.storage.provider
+          });
+
+          const result = await this.fileService.uploadFile(uploadRequest);
+
+          logger.info('File uploaded successfully to storage', {
+            fileId: result._id?.toString(),
+            filename: result.originalName,
+            size: result.size,
+            storageKey: result.storageKey,
+            userId: req.user?.userId,
+            storageProvider: config.storage.provider,
+            hasMetadata: !!result.extractedMetadata,
+            hasExif: !!result.extractedMetadata?.exif,
+            hasGps: !!result.extractedMetadata?.gps,
+            hasDimensions: !!result.extractedMetadata?.dimensions
+          });
+
+          return {
+            success: true,
+            data: {
+              ...result,
+              // Include metadata summary in response
+              metadataSummary: result.extractedMetadata ? {
+                hasExif: !!result.extractedMetadata.exif,
+                hasGps: !!result.extractedMetadata.gps,
+                hasDimensions: !!result.extractedMetadata.dimensions,
+                fileType: result.extractedMetadata.fileType,
+                dimensions: result.extractedMetadata.dimensions,
+                gpsLocation: result.extractedMetadata.gps ? {
+                  latitude: result.extractedMetadata.gps.latitude,
+                  longitude: result.extractedMetadata.gps.longitude,
+                  altitude: result.extractedMetadata.gps.altitude
+                } : undefined
+              } : undefined
+            }
+          };
+        } catch (error) {
+          logger.error('File upload failed', {
+            error: error instanceof Error ? error.message : error,
+            filename: file.originalname,
+            userId: req.user?.userId
+          });
+
+          return {
+            success: false,
+            filename: file.originalname,
+            error: error instanceof Error ? error.message : 'An unknown error occurred'
+          };
+        }
+      });
+
+      const results = await Promise.all(uploadPromises);
+      
+      // Count successful and failed uploads
+      const successCount = results.filter(r => r.success).length;
+      const failureCount = results.filter(r => !r.success).length;
+      
+      logger.info('Multiple file upload completed', {
+        totalFiles: results.length,
+        successCount,
+        failureCount,
+        userId: req.user.userId
+      });
+
+      res.status(201).json({
+        success: true,
+        message: `${successCount} files uploaded successfully${failureCount > 0 ? `, ${failureCount} files failed` : ''}`,
+        results
+      });
+    } catch (error) {
+      logger.error('Multiple file upload failed via API', {
+        error: error instanceof Error ? error.message : error,
+        userId: req.user?.userId,
+        ip: req.ip
+      });
+
+      res.status(500).json({
+        error: 'Upload failed',
+        message: 'An error occurred while uploading the files'
+      });
+    }
+  }
+
+  /**
    * List files with optional filtering
    */
   async listFiles(req: Request, res: Response): Promise<void> {
