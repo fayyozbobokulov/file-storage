@@ -17,8 +17,20 @@ const upload = multer({
     files: 1
   },
   fileFilter: (_req, file, cb) => {
+    // Accept all MIME types by default
+    // Only check restrictions if allowedMimeTypes is configured with specific types
+    // and doesn't include the wildcard '*'
     if (config.upload.allowedMimeTypes.length > 0 && 
-        !config.upload.allowedMimeTypes.includes(file.mimetype)) {
+        !config.upload.allowedMimeTypes.includes('*') &&
+        !config.upload.allowedMimeTypes.some(type => {
+          // Allow wildcard subtypes like 'image/*'
+          if (type.endsWith('/*')) {
+            const mainType = type.split('/')[0];
+            const fileMainType = file.mimetype.split('/')[0];
+            return mainType === fileMainType;
+          }
+          return type === file.mimetype;
+        })) {
       cb(new Error(`File type ${file.mimetype} is not allowed`));
       return;
     }
@@ -28,8 +40,20 @@ const upload = multer({
 
 // Upload file
 router.post('/upload', requireAuth, upload.single('file'), async (req: Request, res: Response): Promise<void> => {
+  logger.info('File upload request received', {
+    userId: req.user?.userId,
+    ip: req.ip,
+    contentType: req.headers['content-type'],
+    fileReceived: !!req.file
+  });
+
   try {
+    // Check if file exists in request
     if (!req.file) {
+      logger.warn('No file provided in upload request', {
+        userId: req.user?.userId,
+        ip: req.ip
+      });
       res.status(400).json({
         error: 'No file provided',
         message: 'Please select a file to upload'
@@ -37,13 +61,32 @@ router.post('/upload', requireAuth, upload.single('file'), async (req: Request, 
       return;
     }
 
+    logger.info('File received in upload request', {
+      filename: req.file.originalname,
+      mimetype: req.file.mimetype,
+      size: req.file.size,
+      userId: req.user?.userId
+    });
+
+    // Check authentication
     if (!req.user) {
+      logger.warn('Unauthenticated upload attempt', {
+        ip: req.ip,
+        filename: req.file.originalname
+      });
       res.status(401).json({
         error: 'Authentication required',
         message: 'User authentication is required'
       });
       return;
     }
+
+    logger.info('Processing metadata from request body', {
+      hasIsPublic: !!req.body.isPublic,
+      hasPermissions: !!req.body.permissions,
+      hasTags: !!req.body.tags,
+      userId: req.user.userId
+    });
 
     // Parse additional metadata from request body
     let isPublic = false;
@@ -53,14 +96,22 @@ router.post('/upload', requireAuth, upload.single('file'), async (req: Request, 
     try {
       if (req.body.isPublic) {
         isPublic = JSON.parse(req.body.isPublic);
+        logger.debug('Parsed isPublic value', { isPublic });
       }
       if (req.body.permissions) {
         permissions = JSON.parse(req.body.permissions);
+        logger.debug('Parsed permissions', { permissionsCount: permissions.length });
       }
       if (req.body.tags) {
         tags = JSON.parse(req.body.tags);
+        logger.debug('Parsed tags', { tags });
       }
     } catch (parseError) {
+      logger.error('Failed to parse JSON metadata', {
+        error: parseError instanceof Error ? parseError.message : parseError,
+        userId: req.user.userId,
+        ip: req.ip
+      });
       res.status(400).json({
         error: 'Invalid JSON in request body',
         message: 'Please check the format of isPublic, permissions, and tags fields'
@@ -69,7 +120,19 @@ router.post('/upload', requireAuth, upload.single('file'), async (req: Request, 
     }
 
     // Validate file size
+    logger.info('Validating file size', {
+      fileSize: req.file.size,
+      maxAllowedSize: config.upload.maxFileSize,
+      filename: req.file.originalname
+    });
+
     if (req.file.size > config.upload.maxFileSize) {
+      logger.warn('File size exceeds limit', {
+        fileSize: req.file.size,
+        maxAllowedSize: config.upload.maxFileSize,
+        filename: req.file.originalname,
+        userId: req.user.userId
+      });
       res.status(413).json({
         error: 'File too large',
         message: `File size exceeds the maximum allowed size of ${config.upload.maxFileSize} bytes`
@@ -78,9 +141,21 @@ router.post('/upload', requireAuth, upload.single('file'), async (req: Request, 
     }
 
     // Validate MIME type if restrictions are configured
+    logger.info('Validating file MIME type', {
+      mimetype: req.file.mimetype,
+      allowedTypes: config.upload.allowedMimeTypes,
+      hasWildcard: config.upload.allowedMimeTypes.includes('*')
+    });
+
     if (config.upload.allowedMimeTypes.length > 0 && 
         !config.upload.allowedMimeTypes.includes('*') &&
         !config.upload.allowedMimeTypes.includes(req.file.mimetype)) {
+      logger.warn('File type not allowed', {
+        mimetype: req.file.mimetype,
+        allowedTypes: config.upload.allowedMimeTypes,
+        filename: req.file.originalname,
+        userId: req.user.userId
+      });
       res.status(400).json({
         error: 'File type not allowed',
         message: `File type ${req.file.mimetype} is not allowed`
@@ -99,14 +174,23 @@ router.post('/upload', requireAuth, upload.single('file'), async (req: Request, 
       tags
     };
 
+    logger.info('Preparing to upload file to storage', {
+      filename: req.file.originalname,
+      mimetype: req.file.mimetype,
+      size: req.file.size,
+      userId: req.user.userId,
+      storageProvider: config.storage.provider
+    });
+
     const result = await fileService.uploadFile(uploadRequest);
 
-    logger.info('File uploaded successfully via API', {
+    logger.info('File uploaded successfully to storage', {
       fileId: result._id?.toString(),
       filename: result.originalName,
       size: result.size,
+      storageKey: result.storageKey,
       userId: req.user.userId,
-      ip: req.ip
+      storageProvider: config.storage.provider
     });
 
     res.status(201).json({

@@ -44,7 +44,16 @@ export class FileService {
 
       // Validate file type
       if (config.upload.allowedMimeTypes.length > 0 && 
-          !config.upload.allowedMimeTypes.includes(request.mimetype)) {
+          !config.upload.allowedMimeTypes.includes('*') &&
+          !config.upload.allowedMimeTypes.some(type => {
+            // Allow wildcard subtypes like 'image/*'
+            if (type.endsWith('/*')) {
+              const mainType = type.split('/')[0];
+              const fileMainType = request.mimetype.split('/')[0];
+              return mainType === fileMainType;
+            }
+            return type === request.mimetype;
+          })) {
         throw new ValidationError(`File type ${request.mimetype} is not allowed`);
       }
 
