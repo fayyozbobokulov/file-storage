@@ -1,6 +1,7 @@
 import { Request, Response } from 'express';
 import { FileService } from '@/services/file-service';
 import { MetadataProcessor } from '@/services/metadata-processor';
+import { CompressionService, CompressionType } from '@/services/compression-service';
 import { FileListQuerySchema, FileNotFoundError, PermissionUpdateRequestSchema } from '@/types';
 import { config } from '@/utils/config';
 import { logger } from '@/utils/logger';
@@ -10,10 +11,12 @@ import { PERMISSIONS } from '@/middleware/auth';
 export class FileController {
   private fileService: FileService;
   private metadataProcessor: MetadataProcessor;
+  private compressionService: CompressionService;
 
   constructor() {
     this.fileService = new FileService();
     this.metadataProcessor = new MetadataProcessor();
+    this.compressionService = new CompressionService();
   }
 
   /**
@@ -273,6 +276,7 @@ export class FileController {
    * - preserveIcc: boolean (default: false) - preserve color profile
    * - preserveOrientation: boolean (default: true) - preserve image orientation
    * - stripGps: boolean (default: true) - strip GPS data even when preserving metadata
+   * - compress: boolean (default: false) - compress the file
    */
   async downloadFile(req: Request, res: Response): Promise<void> {
     try {
@@ -363,6 +367,13 @@ export class FileController {
             downloadResult.mimetype,
             metadataOptions
           );
+        }
+
+        // Compress the file if requested
+        if (req.query['compress'] === 'true') {
+          const compressionType = req.query['compressionType'] as CompressionType;
+          const compressionResult = await this.compressionService.compressBuffer(processedBuffer, metadata.mimetype, { type: compressionType });
+          processedBuffer = compressionResult.buffer;
         }
 
         // Set headers
@@ -740,6 +751,13 @@ export class FileController {
           result.mimetype,
           metadataOptions
         );
+      }
+
+      // Compress the file if requested
+      if (req.query['compress'] === 'true') {
+        const compressionType = req.query['compressionType'] as CompressionType;
+        const compressionResult = await this.compressionService.compressBuffer(processedBuffer, result.mimetype, { type: compressionType });
+        processedBuffer = compressionResult.buffer;
       }
 
       // Set headers
