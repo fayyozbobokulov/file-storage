@@ -1,6 +1,7 @@
 import { Request, Response } from 'express';
 import { FileService } from '@/services/file-service';
-import { FileListQuerySchema, PermissionUpdateRequestSchema } from '@/types';
+import { MetadataProcessor } from '@/services/metadata-processor';
+import { FileListQuerySchema, FileNotFoundError, PermissionUpdateRequestSchema } from '@/types';
 import { config } from '@/utils/config';
 import { logger } from '@/utils/logger';
 import { extractFileMetadata } from '@/middleware/upload';
@@ -8,9 +9,11 @@ import { PERMISSIONS } from '@/middleware/auth';
 
 export class FileController {
   private fileService: FileService;
+  private metadataProcessor: MetadataProcessor;
 
   constructor() {
     this.fileService = new FileService();
+    this.metadataProcessor = new MetadataProcessor();
   }
 
   /**
@@ -263,7 +266,13 @@ export class FileController {
   }
 
   /**
-   * Download file by ID
+   * Download a file with optional metadata processing
+   * Query parameters:
+   * - preserveMetadata: boolean (default: false) - preserve all metadata
+   * - preserveExif: boolean (default: false) - preserve EXIF data only
+   * - preserveIcc: boolean (default: false) - preserve color profile
+   * - preserveOrientation: boolean (default: true) - preserve image orientation
+   * - stripGps: boolean (default: true) - strip GPS data even when preserving metadata
    */
   async downloadFile(req: Request, res: Response): Promise<void> {
     try {
@@ -276,48 +285,47 @@ export class FileController {
         return;
       }
 
-      // First get file metadata to check size
-      const fileMetadata = await this.fileService.getFileMetadata(id, req.user?.userId);
+      // Parse metadata processing options from query parameters
+      const metadataOptions = this.metadataProcessor.parseMetadataOptions(req.query);
+
+      logger.info('File download requested', {
+        fileId: id,
+        userId: req.user?.userId,
+        ip: req.ip,
+        userAgent: req.get('User-Agent'),
+        metadataOptions
+      });
+
+      // Get file metadata first to check size
+      const metadata = await this.fileService.getFileMetadata(id, req.user?.userId);
       const fileSizeThreshold = 1024 * 1024; // 1MB
 
-      // Use streaming for files larger than 1MB
-      if (fileMetadata.size > fileSizeThreshold) {
+      if (metadata.size > fileSizeThreshold) {
+        // Use streaming for large files
         logger.info('Using streaming download for large file', {
           fileId: id,
-          fileSize: fileMetadata.size,
-          threshold: fileSizeThreshold,
-          userId: req.user?.userId
+          fileSize: metadata.size,
+          filename: metadata.originalName
         });
 
         const streamResult = await this.fileService.downloadFileStream(id, req.user?.userId);
-
-        // Set appropriate headers
+        
+        // Set headers
         res.setHeader('Content-Type', streamResult.mimetype);
-        res.setHeader('Content-Length', streamResult.size);
+        res.setHeader('Content-Length', streamResult.size.toString());
+        res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(streamResult.filename)}`);
         
-        // Properly encode filename for Content-Disposition header
-        const encodedFilename = encodeURIComponent(streamResult.filename);
-        res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodedFilename}`);
+        // Add metadata processing info to headers
+        res.setHeader('X-Metadata-Processing', this.metadataProcessor.getMetadataSummary(metadataOptions));
 
-        logger.info('File streamed via API', {
-          fileId: id,
-          filename: streamResult.filename,
-          size: streamResult.size,
-          userId: req.user?.userId,
-          ip: req.ip
-        });
-
-        // Pipe the stream to the response
-        streamResult.stream.pipe(res);
-        
         // Handle stream errors
         streamResult.stream.on('error', (error) => {
           logger.error('Stream error during file download', {
-            error: error.message,
             fileId: id,
-            userId: req.user?.userId,
-            ip: req.ip
+            error: error.message,
+            userId: req.user?.userId
           });
+          
           if (!res.headersSent) {
             res.status(500).json({
               error: 'Download failed',
@@ -326,45 +334,63 @@ export class FileController {
           }
         });
 
-        return;
+        // For large files, we'll note that metadata processing is limited for streaming
+        if (metadataOptions.preserveMetadata === false && streamResult.mimetype.startsWith('image/')) {
+          logger.warn('Metadata stripping not available for streaming downloads', {
+            fileId: id,
+            fileSize: metadata.size
+          });
+          res.setHeader('X-Metadata-Warning', 'Metadata processing not available for large file streaming');
+        }
+
+        // Pipe the stream to response
+        streamResult.stream.pipe(res);
+      } else {
+        // Use buffer download for smaller files with metadata processing
+        logger.info('Using buffer download for small file', {
+          fileId: id,
+          fileSize: metadata.size,
+          filename: metadata.originalName
+        });
+
+        const downloadResult = await this.fileService.downloadFile(id, req.user?.userId);
+        
+        // Process metadata based on options (only for images)
+        let processedBuffer = downloadResult.buffer;
+        if (downloadResult.mimetype.startsWith('image/')) {
+          processedBuffer = await this.metadataProcessor.processImageBuffer(
+            downloadResult.buffer,
+            downloadResult.mimetype,
+            metadataOptions
+          );
+        }
+
+        // Set headers
+        res.setHeader('Content-Type', downloadResult.mimetype);
+        res.setHeader('Content-Length', processedBuffer.length.toString());
+        res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(downloadResult.filename)}`);
+        res.setHeader('X-Metadata-Processing', this.metadataProcessor.getMetadataSummary(metadataOptions));
+
+        logger.info('File download completed', {
+          fileId: id,
+          filename: downloadResult.filename,
+          originalSize: downloadResult.buffer.length,
+          processedSize: processedBuffer.length,
+          metadataProcessed: downloadResult.mimetype.startsWith('image/'),
+          userId: req.user?.userId
+        });
+
+        res.send(processedBuffer);
       }
-
-      // Use buffer download for smaller files
-      logger.info('Using buffer download for small file', {
-        fileId: id,
-        fileSize: fileMetadata.size,
-        threshold: fileSizeThreshold,
-        userId: req.user?.userId
-      });
-
-      const result = await this.fileService.downloadFile(id, req.user?.userId);
-
-      // Set appropriate headers
-      res.setHeader('Content-Type', result.mimetype);
-      res.setHeader('Content-Length', result.size);
-      
-      // Properly encode filename for Content-Disposition header
-      const encodedFilename = encodeURIComponent(result.filename);
-      res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodedFilename}`);
-
-      logger.info('File downloaded via API', {
-        fileId: id,
-        filename: result.filename,
-        size: result.size,
-        userId: req.user?.userId,
-        ip: req.ip
-      });
-
-      res.send(result.buffer);
     } catch (error) {
-      logger.error('Failed to download file via API', {
+      logger.error('Failed to download file', {
         error: error instanceof Error ? error.message : error,
         fileId: req.params['id'],
         userId: req.user?.userId,
         ip: req.ip
       });
 
-      if (error instanceof Error && error.message.includes('not found')) {
+      if (error instanceof FileNotFoundError) {
         res.status(404).json({
           error: 'File not found',
           message: 'The requested file does not exist'
@@ -653,7 +679,14 @@ export class FileController {
   }
 
   /**
-   * Serve secure file with token validation
+   * Serve a file via secure URL with optional metadata processing
+   * Query parameters:
+   * - token: string (required) - secure access token
+   * - preserveMetadata: boolean (default: false) - preserve all metadata
+   * - preserveExif: boolean (default: false) - preserve EXIF data only
+   * - preserveIcc: boolean (default: false) - preserve color profile
+   * - preserveOrientation: boolean (default: true) - preserve image orientation
+   * - stripGps: boolean (default: true) - strip GPS data even when preserving metadata
    */
   async serveSecureFile(req: Request, res: Response): Promise<void> {
     try {
@@ -667,7 +700,6 @@ export class FileController {
       }
 
       const { token } = req.query;
-
       if (!token || typeof token !== 'string') {
         res.status(400).json({
           error: 'Token required',
@@ -676,46 +708,69 @@ export class FileController {
         return;
       }
 
-      // First get file metadata to check size (we'll need to modify serveSecureFile to return metadata)
-      const result = await this.fileService.serveSecureFile(id, token);
-      const fileSizeThreshold = 1024 * 1024; // 1MB
+      // Parse metadata processing options from query parameters
+      const metadataOptions = this.metadataProcessor.parseMetadataOptions(req.query);
 
-      // Check if we should stream based on size
+      logger.info('Secure file access requested', {
+        fileId: id,
+        token: token.substring(0, 8) + '...',
+        ip: req.ip,
+        userAgent: req.get('User-Agent'),
+        metadataOptions
+      });
+
+      const result = await this.fileService.serveSecureFile(id, token);
+      
+      // Check file size for potential streaming (future enhancement)
+      const fileSizeThreshold = 1024 * 1024; // 1MB
       if (result.size > fileSizeThreshold) {
-        logger.info('Using streaming for large secure file', {
+        logger.warn('Large file served as buffer - streaming not yet implemented for secure URLs', {
           fileId: id,
           fileSize: result.size,
-          threshold: fileSizeThreshold
-        });
-
-        // For streaming, we would need to implement a streaming version of serveSecureFile
-        // For now, we'll use the buffer approach but log that streaming would be beneficial
-        logger.warn('Large file served as buffer - consider implementing streaming for secure files', {
-          fileId: id,
-          fileSize: result.size
+          threshold: fileSizeThreshold,
+          token: token.substring(0, 8) + '...'
         });
       }
 
-      // Set appropriate headers
-      res.setHeader('Content-Type', result.mimetype);
-      res.setHeader('Content-Length', result.size);
-      
-      // Properly encode filename for Content-Disposition header
-      const encodedFilename = encodeURIComponent(result.filename);
-      res.setHeader('Content-Disposition', `inline; filename*=UTF-8''${encodedFilename}`);
+      // Process metadata based on options (only for images)
+      let processedBuffer = result.buffer;
+      if (result.mimetype.startsWith('image/')) {
+        processedBuffer = await this.metadataProcessor.processImageBuffer(
+          result.buffer,
+          result.mimetype,
+          metadataOptions
+        );
+      }
 
-      res.send(result.buffer);
-    } catch (error) {
-      logger.error('Failed to serve secure file via API', {
-        error: error instanceof Error ? error.message : error,
-        fileId: req.params['id'],
+      // Set headers
+      res.setHeader('Content-Type', result.mimetype);
+      res.setHeader('Content-Length', processedBuffer.length.toString());
+      res.setHeader('Cache-Control', 'private, max-age=3600'); // Cache for 1 hour
+      res.setHeader('X-Metadata-Processing', this.metadataProcessor.getMetadataSummary(metadataOptions));
+
+      logger.info('Secure file served', {
+        fileId: id,
+        token: token.substring(0, 8) + '...',
+        mimetype: result.mimetype,
+        originalSize: result.buffer.length,
+        processedSize: processedBuffer.length,
+        metadataProcessed: result.mimetype.startsWith('image/'),
         ip: req.ip
       });
 
-      if (error instanceof Error && (error.message.includes('invalid') || error.message.includes('expired'))) {
+      res.send(processedBuffer);
+    } catch (error) {
+      logger.error('Failed to serve secure file', {
+        error: error instanceof Error ? error.message : error,
+        fileId: req.params['id'],
+        token: req.query['token']?.toString().substring(0, 8) + '...',
+        ip: req.ip
+      });
+
+      if (error instanceof Error && error.message.includes('Invalid or expired')) {
         res.status(401).json({
-          error: 'Invalid or expired token',
-          message: 'The provided token is invalid or has expired'
+          error: 'Invalid token',
+          message: 'The secure token is invalid or has expired'
         });
         return;
       }
