@@ -28,6 +28,10 @@ router.get('/', optionalAuth, fileController.listFiles.bind(fileController));
 // Get file metadata
 router.get('/:id', optionalAuth, fileController.getFileMetadata.bind(fileController));
 
+// Get file metadata
+router.get('/:id/metadata', optionalAuth, fileController.getFileMetadata.bind(fileController));
+router.get('/:id/metadata/detailed', optionalAuth, fileController.getFileMetadataDetailed.bind(fileController));
+
 // Download file
 router.get('/:id/download', optionalAuth, fileController.downloadFile.bind(fileController));
 

@@ -7,6 +7,7 @@ import { config } from '@/utils/config';
 import jwt from 'jsonwebtoken';
 import { v4 as uuidv4 } from 'uuid';
 import { Readable } from 'stream';
+import { MetadataExtractor } from './metadata-extractor';
 
 export interface UploadFileRequest {
   buffer: Buffer;
@@ -30,9 +31,11 @@ export class FileService {
   private fileRepository: FileRepository;
   private storageProvider: ReturnType<typeof getStorageProvider>;
   private thumbnailService: ThumbnailService;
+  private metadataExtractor: MetadataExtractor;
 
   constructor() {
     this.fileRepository = new FileRepository();
+    this.metadataExtractor = new MetadataExtractor();
     this.storageProvider = getStorageProvider();
     this.thumbnailService = new ThumbnailService(this.storageProvider);
   }
@@ -78,6 +81,21 @@ export class FileService {
         request.mimetype
       );
 
+      // Extract metadata
+      const extractedMetadata = await this.metadataExtractor.extractMetadata(
+        request.buffer, 
+        request.originalName, 
+        request.mimetype
+      );
+
+      logger.info('Metadata extraction completed', {
+        filename: request.originalName,
+        hasExif: !!extractedMetadata.exif,
+        hasGps: !!extractedMetadata.gps,
+        hasDimensions: !!extractedMetadata.dimensions,
+        extractedFields: Object.keys(extractedMetadata)
+      });
+
       // Generate thumbnails if supported
       let thumbnails: Record<string, any> = {};
       if (ThumbnailService.supportsThumbnails(request.mimetype)) {
@@ -113,6 +131,7 @@ export class FileService {
         permissions: request.permissions || [],
         customPermissions: {},
         thumbnails,
+        extractedMetadata,
         createdAt: new Date(),
         updatedAt: new Date()
       };

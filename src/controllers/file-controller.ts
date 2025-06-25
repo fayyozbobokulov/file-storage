@@ -130,13 +130,32 @@ export class FileController {
         size: result.size,
         storageKey: result.storageKey,
         userId: req.user.userId,
-        storageProvider: config.storage.provider
+        storageProvider: config.storage.provider,
+        hasMetadata: !!result.extractedMetadata,
+        hasExif: !!result.extractedMetadata?.exif,
+        hasGps: !!result.extractedMetadata?.gps,
+        hasDimensions: !!result.extractedMetadata?.dimensions
       });
 
       res.status(201).json({
         success: true,
-        data: result,
-        message: 'File uploaded successfully'
+        data: {
+          ...result,
+          // Include metadata summary in response
+          metadataSummary: result.extractedMetadata ? {
+            hasExif: !!result.extractedMetadata.exif,
+            hasGps: !!result.extractedMetadata.gps,
+            hasDimensions: !!result.extractedMetadata.dimensions,
+            fileType: result.extractedMetadata.fileType,
+            dimensions: result.extractedMetadata.dimensions,
+            gpsLocation: result.extractedMetadata.gps ? {
+              latitude: result.extractedMetadata.gps.latitude,
+              longitude: result.extractedMetadata.gps.longitude,
+              altitude: result.extractedMetadata.gps.altitude
+            } : undefined
+          } : undefined
+        },
+        message: 'File uploaded successfully with comprehensive metadata extraction'
       });
     } catch (error) {
       logger.error('File upload failed via API', {
@@ -755,6 +774,70 @@ export class FileController {
       res.status(500).json({
         error: 'Failed to retrieve statistics',
         message: 'An error occurred while retrieving storage statistics'
+      });
+    }
+  }
+
+  /**
+   * Get detailed file metadata including extracted metadata
+   */
+  async getFileMetadataDetailed(req: Request, res: Response): Promise<void> {
+    try {
+      const { id } = req.params;
+      if (!id) {
+        res.status(400).json({
+          error: 'File ID required',
+          message: 'File ID parameter is required'
+        });
+        return;
+      }
+
+      const metadata = await this.fileService.getFileMetadata(id, req.user?.userId);
+
+      logger.info('Detailed metadata retrieved', {
+        fileId: id,
+        filename: metadata.originalName,
+        hasExtractedMetadata: !!metadata.extractedMetadata,
+        userId: req.user?.userId,
+        ip: req.ip
+      });
+
+      res.json({
+        success: true,
+        data: {
+          ...metadata,
+          // Include full extracted metadata
+          extractedMetadata: metadata.extractedMetadata || null
+        },
+        message: 'File metadata retrieved successfully'
+      });
+    } catch (error) {
+      logger.error('Failed to retrieve detailed file metadata', {
+        error: error instanceof Error ? error.message : error,
+        fileId: req.params['id'],
+        userId: req.user?.userId,
+        ip: req.ip
+      });
+
+      if (error instanceof Error && error.message.includes('not found')) {
+        res.status(404).json({
+          error: 'File not found',
+          message: 'The requested file does not exist'
+        });
+        return;
+      }
+
+      if (error instanceof Error && error.message.includes('Access denied')) {
+        res.status(403).json({
+          error: 'Access denied',
+          message: 'You do not have permission to access this file metadata'
+        });
+        return;
+      }
+
+      res.status(500).json({
+        error: 'Failed to retrieve metadata',
+        message: 'An error occurred while retrieving file metadata'
       });
     }
   }

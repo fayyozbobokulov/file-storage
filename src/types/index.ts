@@ -1,5 +1,6 @@
 import { ObjectId } from 'mongodb';
 import { z } from 'zod';
+import { ExtractedMetadata } from '@/services/metadata-extractor';
 
 // Permission system types
 export enum PermissionAction {
@@ -41,6 +42,7 @@ export interface FileMetadata {
   thumbnails?: Record<string, ThumbnailInfo>;
   tags?: string[];
   description?: string;
+  extractedMetadata?: ExtractedMetadata;
 }
 
 // Storage provider interface
@@ -131,7 +133,8 @@ export const FileMetadataSchema = z.object({
     size: z.number().positive()
   })).optional(),
   tags: z.array(z.string()).optional(),
-  description: z.string().max(1000).optional()
+  description: z.string().max(1000).optional(),
+  extractedMetadata: z.any().optional()
 });
 
 export const UploadRequestSchema = z.object({
