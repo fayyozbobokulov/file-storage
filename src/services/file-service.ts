@@ -5,6 +5,7 @@ import { ThumbnailService } from './thumbnail-service';
 import { logger } from '@/utils/logger';
 import { config } from '@/utils/config';
 import jwt from 'jsonwebtoken';
+import { v4 as uuidv4 } from 'uuid';
 
 export interface UploadFileRequest {
   buffer: Buffer;
@@ -57,17 +58,22 @@ export class FileService {
         throw new ValidationError(`File type ${request.mimetype} is not allowed`);
       }
 
+      // Generate a unique storage key using UUID
+      const fileExtension = request.originalName.split('.').pop() || '';
+      const uniqueStorageKey = `${uuidv4()}${fileExtension ? '.' + fileExtension : ''}`;
+      
       logger.info('Starting file upload', {
         originalName: request.originalName,
         mimetype: request.mimetype,
         size: request.size,
-        ownerId: request.ownerId
+        ownerId: request.ownerId,
+        storageKey: uniqueStorageKey
       });
 
-      // Upload file to storage
+      // Upload file to storage with the generated storage key
       const storageResult = await this.storageProvider.upload(
         request.buffer,
-        request.originalName,
+        uniqueStorageKey, // Use the generated key instead of original filename
         request.mimetype
       );
 
@@ -77,17 +83,19 @@ export class FileService {
         try {
           thumbnails = await this.thumbnailService.generateThumbnails(
             request.buffer,
-            request.originalName,
+            uniqueStorageKey, // Use the same key for thumbnails
             request.mimetype
           );
           logger.info('Thumbnails generated', {
             originalName: request.originalName,
+            storageKey: uniqueStorageKey,
             thumbnailCount: Object.keys(thumbnails).length
           });
         } catch (error) {
           logger.warn('Failed to generate thumbnails, continuing without them', {
             error: error instanceof Error ? error.message : error,
-            originalName: request.originalName
+            originalName: request.originalName,
+            storageKey: uniqueStorageKey
           });
         }
       }
@@ -95,7 +103,7 @@ export class FileService {
       // Create file metadata
       const fileMetadata: Omit<FileMetadata, '_id'> = {
         originalName: request.originalName,
-        storageKey: storageResult.storageKey,
+        storageKey: storageResult.storageKey || uniqueStorageKey, // Fallback to our generated key if needed
         mimetype: request.mimetype,
         size: request.size,
         ownerId: request.ownerId,
