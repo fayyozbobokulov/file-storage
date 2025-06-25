@@ -386,8 +386,7 @@ export class FileController {
           streamUrl: `${baseUrl}/api/files/${file._id}/stream`,
           thumbnails: {
             small: `${baseUrl}/api/files/${file._id}/thumbnail/small`,
-            medium: `${baseUrl}/api/files/${file._id}/thumbnail/medium`,
-            large: `${baseUrl}/api/files/${file._id}/thumbnail/large`
+            medium: `${baseUrl}/api/files/${file._id}/thumbnail/medium`
           }
         };
         
@@ -639,14 +638,61 @@ export class FileController {
         return;
       }
 
-      const result = await this.fileService.getThumbnail(id, size, req.user?.userId);
+      // Map common size names to actual numeric sizes if needed
+      let thumbnailSize = size;
+      const sizeMapping: Record<string, string> = {
+        'small': '128',
+        'medium': '512'
+      };
 
-      // Set appropriate headers
-      res.setHeader('Content-Type', result.mimetype);
-      res.setHeader('Content-Length', result.size);
-      res.setHeader('Cache-Control', 'public, max-age=86400'); // Cache for 24 hours
+      // If a named size was provided, map it to the corresponding numeric size
+      if (sizeMapping[size]) {
+        thumbnailSize = sizeMapping[size];
+      }
 
-      res.send(result.buffer);
+      try {
+        const result = await this.fileService.getThumbnail(id, thumbnailSize, req.user?.userId || undefined);
+
+        // Set appropriate headers for browser display
+        res.setHeader('Content-Type', result.mimetype);
+        res.setHeader('Content-Length', result.size);
+        res.setHeader('Cache-Control', 'public, max-age=86400'); // Cache for 24 hours
+        res.setHeader('Content-Disposition', 'inline'); // Display in browser
+
+        // Send the buffer directly to the client
+        res.send(result.buffer);
+        return;
+      } catch (error) {
+        // If the requested size doesn't exist, try to find any available thumbnail
+        if (error instanceof Error && error.message.includes('Thumbnail not found')) {
+          // Try to get the file metadata to see what thumbnails are available
+          const file = await this.fileService.getFileMetadata(id, req.user?.userId);
+          
+          if (file && file.thumbnails && Object.keys(file.thumbnails).length > 0) {
+            // Use the first available thumbnail
+            const availableSize = Object.keys(file.thumbnails)[0];
+            logger.info(`Requested thumbnail size ${size} not found, using ${availableSize} instead`, {
+              fileId: id,
+              requestedSize: size,
+              availableSize
+            });
+            
+            const fallbackResult = await this.fileService.getThumbnail(id, availableSize!, req.user?.userId);
+            
+            // Set headers and send the fallback thumbnail
+            res.setHeader('Content-Type', fallbackResult.mimetype);
+            res.setHeader('Content-Length', fallbackResult.size);
+            res.setHeader('Cache-Control', 'public, max-age=86400');
+            res.setHeader('Content-Disposition', 'inline');
+            
+            res.send(fallbackResult.buffer);
+            return;
+          }
+        }
+        
+        // If we reach here, rethrow the error to be caught by the outer catch block
+        throw error;
+      }
     } catch (error) {
       logger.error('Failed to get thumbnail via API', {
         error: error instanceof Error ? error.message : error,
@@ -656,7 +702,7 @@ export class FileController {
         ip: req.ip
       });
 
-      if (error instanceof Error && error.message.includes('not found')) {
+      if (error instanceof Error && (error.message.includes('not found') || error.message.includes('Thumbnail not found'))) {
         res.status(404).json({
           error: 'Thumbnail not found',
           message: 'The requested thumbnail does not exist'
