@@ -262,7 +262,10 @@ export class FileController {
       // Set appropriate headers
       res.setHeader('Content-Type', result.mimetype);
       res.setHeader('Content-Length', result.size);
-      res.setHeader('Content-Disposition', `attachment; filename="${result.filename}"`);
+      
+      // Properly encode filename for Content-Disposition header
+      const encodedFilename = encodeURIComponent(result.filename);
+      res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodedFilename}`);
 
       logger.info('File downloaded via API', {
         fileId: id,
@@ -597,7 +600,10 @@ export class FileController {
       // Set appropriate headers
       res.setHeader('Content-Type', result.mimetype);
       res.setHeader('Content-Length', result.size);
-      res.setHeader('Content-Disposition', `inline; filename="${result.filename}"`);
+      
+      // Properly encode filename for Content-Disposition header
+      const encodedFilename = encodeURIComponent(result.filename);
+      res.setHeader('Content-Disposition', `inline; filename*=UTF-8''${encodedFilename}`);
 
       res.send(result.buffer);
     } catch (error) {

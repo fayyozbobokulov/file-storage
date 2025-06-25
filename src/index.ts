@@ -7,7 +7,7 @@ import { logger } from '@/utils/logger';
 import { dbConnection } from '@/database/connection';
 import { StorageFactory } from '@/storage/factory';
 import { extractUserId } from '@/middleware/auth';
-import filesRouter from '@/routes/files';
+import filesRouter from '@/routes/files-refactored';
 import authRouter from '@/routes/auth';
 
 // Create Express app
