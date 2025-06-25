@@ -375,10 +375,31 @@ export class FileController {
       }
 
       const result = await this.fileService.listFiles(queryResult.data, req.user?.userId);
+      
+      // Generate URLs for each file
+      const baseUrl = `${req.protocol}://${req.get('host')}`;
+      const filesWithUrls = result.files.map(file => {
+        // Create URLs for the original file and thumbnails
+        const fileUrls = {
+          ...file,
+          originalUrl: `${baseUrl}/api/files/${file._id}/download`,
+          streamUrl: `${baseUrl}/api/files/${file._id}/stream`,
+          thumbnails: {
+            small: `${baseUrl}/api/files/${file._id}/thumbnail/small`,
+            medium: `${baseUrl}/api/files/${file._id}/thumbnail/medium`,
+            large: `${baseUrl}/api/files/${file._id}/thumbnail/large`
+          }
+        };
+        
+        return fileUrls;
+      });
 
       res.json({
         success: true,
-        data: result,
+        data: {
+          ...result,
+          files: filesWithUrls
+        },
         message: 'Files retrieved successfully'
       });
     } catch (error) {

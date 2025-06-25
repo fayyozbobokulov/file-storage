@@ -55,6 +55,7 @@ function setupRoutes(): void {
       endpoints: {
         health: '/health',
         upload: 'POST /api/files/upload',
+        'upload-multiple': 'POST /api/files/upload-miltiple',
         download: 'GET /api/files/:id/download',
         stream: 'GET /api/files/:id/stream',
         thumbnail: 'GET /api/files/:id/thumbnail/:size',
